@@ -21,11 +21,11 @@ const body = Libre_Franklin({
 })
 
 export const metadata: Metadata = {
-  title: 'Earth-616 — MCU Timeline',
+  title: 'Earth-616 - MCU Timeline',
   description: 'Watch or rewatch the Marvel Cinematic Universe in official timeline order. Track what you have seen on this device.',
   applicationName: 'Earth-616',
   icons: {
-    icon: '/icon.svg',
+    icon: '/favicon.ico',
     apple: '/apple-icon.png',
   },
 }

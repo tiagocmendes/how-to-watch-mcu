@@ -4,34 +4,24 @@ import { AlertDialog } from '@base-ui/react/alert-dialog'
 import { ToggleGroup } from '@base-ui/react/toggle-group'
 import { AnimatePresence, motion } from 'framer-motion'
 import { RotateCcw, Search, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { Toggle } from '@/components/ui/toggle'
 import { MCUDetailsModal } from '@/components/mcu-details-modal'
 import { MCUPosterCard } from '@/components/mcu-poster-card'
+import { MCUProfileRail } from '@/components/mcu-profile-rail'
+import {
+  MAX_PROFILES,
+  createProfileId,
+  getActiveProfile,
+  getClientProfileSnapshot,
+  getServerProfileSnapshot,
+  hydrateProfileStoreFromStorage,
+  subscribeProfileStore,
+  writeProfileStore,
+  type ProfileAvatarId,
+  type ProfileStore,
+} from '@/lib/mcu-profiles'
 import { MCU_TIMELINE, type MCUItem } from '@/lib/mcu-timeline'
-
-const WATCHED_STORAGE_KEY = 'multiverse-rewatch:watched:v1'
-
-function readWatchedIds() {
-  if (typeof window === 'undefined') return [] as string[]
-  try {
-    const savedProgress = window.localStorage.getItem(WATCHED_STORAGE_KEY)
-    if (!savedProgress) return [] as string[]
-    const parsedProgress: unknown = JSON.parse(savedProgress)
-    if (!Array.isArray(parsedProgress)) return []
-    return parsedProgress.filter((id): id is string => typeof id === 'string')
-  } catch {
-    return [] as string[]
-  }
-}
-
-function writeWatchedIds(nextIds: string[]) {
-  try {
-    window.localStorage.setItem(WATCHED_STORAGE_KEY, JSON.stringify(nextIds))
-  } catch {
-    // Keep this interaction usable when browser storage is unavailable.
-  }
-}
 
 type OrderMode = 'timeline' | 'release'
 type FilterMode = 'all' | 'unwatched' | 'watched'
@@ -87,7 +77,11 @@ function LinkedInIcon() {
 
 export function MCURewatcher() {
   const items = MCU_TIMELINE
-  const [watchedIds, setWatchedIds] = useState<string[]>([])
+  const profileStore = useSyncExternalStore(
+    subscribeProfileStore,
+    getClientProfileSnapshot,
+    getServerProfileSnapshot,
+  )
   const [orderMode, setOrderMode] = useState<OrderMode>('timeline')
   const [filterMode, setFilterMode] = useState<FilterMode>('all')
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
@@ -96,7 +90,17 @@ export function MCURewatcher() {
   const [activeItemId, setActiveItemId] = useState<string | null>(null)
   const [resetOpen, setResetOpen] = useState(false)
 
+  useLayoutEffect(() => {
+    hydrateProfileStoreFromStorage()
+  }, [])
+
+  const activeProfile = getActiveProfile(profileStore)
+  const watchedIds = activeProfile.watchedIds
   const watchedSet = useMemo(() => new Set(watchedIds), [watchedIds])
+
+  const persistProfiles = useCallback((nextStore: ProfileStore) => {
+    writeProfileStore(nextStore)
+  }, [])
   const scopedItems = useMemo(
     () => (kindFilter === 'movies' ? items.filter((item) => item.mediaType === 'movie') : items),
     [items, kindFilter],
@@ -122,24 +126,57 @@ export function MCURewatcher() {
     })
   }, [filterMode, orderMode, phaseFilter, scopedItems, searchTerm, watchedSet])
 
-  useEffect(() => {
-    setWatchedIds(readWatchedIds())
-  }, [])
+  const updateActiveWatched = useCallback((nextIds: string[]) => {
+    persistProfiles({
+      ...profileStore,
+      profiles: profileStore.profiles.map((profile) => (
+        profile.id === activeProfile.id ? { ...profile, watchedIds: nextIds } : profile
+      )),
+    })
+  }, [activeProfile.id, persistProfiles, profileStore])
 
   const toggleWatched = useCallback((id: string) => {
-    setWatchedIds((currentIds) => {
-      const nextIds = currentIds.includes(id)
-        ? currentIds.filter((watchedId) => watchedId !== id)
-        : [...currentIds, id]
-      writeWatchedIds(nextIds)
-      return nextIds
-    })
-  }, [])
+    updateActiveWatched(
+      watchedIds.includes(id)
+        ? watchedIds.filter((watchedId) => watchedId !== id)
+        : [...watchedIds, id],
+    )
+  }, [updateActiveWatched, watchedIds])
 
   const resetProgress = useCallback(() => {
-    writeWatchedIds([])
-    setWatchedIds([])
-  }, [])
+    updateActiveWatched([])
+  }, [updateActiveWatched])
+
+  const selectProfile = useCallback((id: string) => {
+    persistProfiles({ ...profileStore, activeProfileId: id })
+  }, [persistProfiles, profileStore])
+
+  const createProfile = useCallback((name: string, avatarId: ProfileAvatarId) => {
+    if (profileStore.profiles.length >= MAX_PROFILES) return
+    const id = createProfileId()
+    persistProfiles({
+      activeProfileId: id,
+      profiles: [...profileStore.profiles, { id, name, avatarId, watchedIds: [] }],
+    })
+  }, [persistProfiles, profileStore])
+
+  const updateProfile = useCallback((id: string, name: string, avatarId: ProfileAvatarId) => {
+    persistProfiles({
+      ...profileStore,
+      profiles: profileStore.profiles.map((profile) => (
+        profile.id === id ? { ...profile, name, avatarId } : profile
+      )),
+    })
+  }, [persistProfiles, profileStore])
+
+  const deleteProfile = useCallback((id: string) => {
+    if (profileStore.profiles.length < 2) return
+    const profiles = profileStore.profiles.filter((profile) => profile.id !== id)
+    persistProfiles({
+      profiles,
+      activeProfileId: profileStore.activeProfileId === id ? profiles[0].id : profileStore.activeProfileId,
+    })
+  }, [persistProfiles, profileStore])
 
   const closeDetails = useCallback(() => setActiveItemId(null), [])
   const activeItem = items.find((item) => item.id === activeItemId) ?? null
@@ -179,18 +216,27 @@ export function MCURewatcher() {
           <a className="header-link" href="#timeline">Jump to issues</a>
         </header>
 
+        <MCUProfileRail
+          profiles={profileStore.profiles}
+          activeProfile={activeProfile}
+          onSelect={selectProfile}
+          onCreate={createProfile}
+          onUpdate={updateProfile}
+          onDelete={deleteProfile}
+        />
+
         <section className="hero" aria-labelledby="hero-title">
           <div className="hero-copy">
             <p className="eyebrow">THE COMPLETE MULTIVERSE RUN</p>
             <h1 className="hero-title" id="hero-title">Watch the MCU in story order.</h1>
             <p className="hero-description">
-              First time through or another lap around the timeline. {scopedItems.length} titles across Phases 1–6 — or switch to movies only.
+              First time through or another lap around the timeline. <br />{scopedItems.length} titles across Phases 1–6, or switch to movies only.
             </p>
             <a className="hero-cta" href="#timeline">Open the timeline</a>
           </div>
 
           <div className="progress-board" aria-label="Watch progress">
-            <p className="progress-board__kicker">YOUR RUN</p>
+            <p className="progress-board__kicker">{activeProfile.name}</p>
             <p className="progress-board__number">{progress}<span>%</span></p>
             <div className="progress-track" role="progressbar" aria-label="MCU timeline progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
               <span style={{ width: `${progress}%` }} />
@@ -204,7 +250,7 @@ export function MCURewatcher() {
         <section className="catalog-section" id="timeline" aria-labelledby="catalog-title">
           <div className="catalog-heading-row">
             <h2 className="catalog-title" id="catalog-title">Issue file</h2>
-            <p className="catalog-description">Mark titles as you go. Progress stays on this device.</p>
+            <p className="catalog-description">Mark titles as you go. Progress stays on this device, per profile.</p>
           </div>
 
           <div className="catalog-toolbar">
